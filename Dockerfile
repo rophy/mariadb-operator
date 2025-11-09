@@ -10,7 +10,11 @@ COPY go.mod go.sum /app/
 RUN go mod download
 
 COPY . /app
-RUN go build -o mariadb-operator cmd/controller/*.go
+
+# Build the controller binary with build cache
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg \
+    go build -o mariadb-operator cmd/controller/*.go
 
 FROM gcr.io/distroless/static AS app
 

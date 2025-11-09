@@ -3,6 +3,8 @@ kind: Config
 metadata:
   name: mariadb-operator
 build:
+  local:
+    useBuildkit: true
   artifacts:
     - image: mariadb-operator
       docker:
