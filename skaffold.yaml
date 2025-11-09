@@ -107,9 +107,10 @@ deploy:
               - sh
               - -c
               - |
-                # Create root password secret if it doesn't exist
+                # Create password secrets if they don't exist
                 kubectl create secret generic mariadb \
                   --from-literal=root-password=mariadb-root-password \
+                  --from-literal=app-password=mariadb-app-password \
                   --namespace=default \
                   --dry-run=client -o yaml | kubectl apply -f -
 
@@ -249,6 +250,27 @@ profiles:
                 - name: test
                   characterSet: utf8mb4
                   collate: utf8mb4_unicode_ci
+              # Create app user without SUPER privilege for realistic testing
+              users:
+                - name: appuser
+                  passwordSecretKeyRef:
+                    name: mariadb
+                    key: app-password
+                  maxUserConnections: 100
+              grants:
+                - name: appuser-test-grant
+                  database: test
+                  table: "*"
+                  username: appuser
+                  privileges:
+                    - SELECT
+                    - INSERT
+                    - UPDATE
+                    - DELETE
+                    - CREATE
+                    - DROP
+                    - INDEX
+                    - ALTER
               # Note: Replication config would need additional CRs
               # See examples/manifests/mariadb_replication.yaml
             version: 25.10.2
@@ -264,9 +286,9 @@ profiles:
               # Connect to primary service for replication testing
               mariadb.host: mariadb-cluster-primary
               mariadb.port: 3306
-              mariadb.user: root
+              mariadb.user: appuser
               mariadb.passwordSecret.name: mariadb
-              mariadb.passwordSecret.key: root-password
+              mariadb.passwordSecret.key: app-password
               mariadb.database: test
               client.writeInterval: 0.5
 
