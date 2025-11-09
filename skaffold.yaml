@@ -12,6 +12,12 @@ build:
           TARGETARCH: amd64
       platforms:
         - linux/amd64
+    - image: mariadb-test-client
+      context: test/client
+      docker:
+        dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
   tagPolicy:
     gitCommit:
       variant: AbbrevCommitSha
@@ -44,8 +50,8 @@ manifests:
         setValues:
           # Disable webhook for simpler local development
           webhook.enabled: false
-          # Enable cert-controller (no webhook dependency)
-          certController.enabled: true
+          # Disable cert-controller (webhook dependency)
+          certController.enabled: false
           # Log level for debugging
           logLevel: DEBUG
           # Disable high availability for local dev
@@ -66,7 +72,31 @@ manifests:
           mariadb.storage.size: 2Gi
           mariadb.rootPasswordSecretKeyRef.name: mariadb
           mariadb.rootPasswordSecretKeyRef.key: root-password
+          # Create test database automatically via Database CR
+          databases:
+            - name: test
+              characterSet: utf8mb4
+              collate: utf8mb4_unicode_ci
         version: 25.10.2
+
+      # Deploy test client
+      - name: mariadb-test-client
+        chartPath: test/client/chart
+        namespace: default
+        createNamespace: false
+        upgradeOnChange: true
+        wait: false
+        setValueTemplates:
+          image: "{{.IMAGE_FULLY_QUALIFIED_mariadb_test_client}}"
+        setValues:
+          imagePullPolicy: IfNotPresent
+          mariadb.host: mariadb-cluster
+          mariadb.port: 3306
+          mariadb.user: root
+          mariadb.passwordSecret.name: mariadb
+          mariadb.passwordSecret.key: root-password
+          mariadb.database: test
+          client.writeInterval: 1.0
 
 deploy:
   helm:
@@ -159,7 +189,7 @@ profiles:
               image.pullPolicy: IfNotPresent
             setValues:
               webhook.enabled: false
-              certController.enabled: true
+              certController.enabled: false
               logLevel: DEBUG
               ha.enabled: false
             version: 25.10.2
@@ -198,7 +228,7 @@ profiles:
               image.pullPolicy: IfNotPresent
             setValues:
               webhook.enabled: false
-              certController.enabled: true
+              certController.enabled: false
               logLevel: DEBUG
               ha.enabled: false
             version: 25.10.2
@@ -210,10 +240,35 @@ profiles:
             setValues:
               mariadb.replicas: 3
               mariadb.galera.enabled: false
+              mariadb.replication.enabled: true
               mariadb.storage.size: 2Gi
+              mariadb.rootPasswordSecretKeyRef.name: mariadb
+              mariadb.rootPasswordSecretKeyRef.key: root-password
+              # Create test database automatically via Database CR
+              databases:
+                - name: test
+                  characterSet: utf8mb4
+                  collate: utf8mb4_unicode_ci
               # Note: Replication config would need additional CRs
               # See examples/manifests/mariadb_replication.yaml
             version: 25.10.2
+          - name: mariadb-test-client
+            chartPath: test/client/chart
+            namespace: default
+            upgradeOnChange: true
+            wait: false
+            setValueTemplates:
+              image: "{{.IMAGE_FULLY_QUALIFIED_mariadb_test_client}}"
+            setValues:
+              imagePullPolicy: IfNotPresent
+              # Connect to primary service for replication testing
+              mariadb.host: mariadb-cluster-primary
+              mariadb.port: 3306
+              mariadb.user: root
+              mariadb.passwordSecret.name: mariadb
+              mariadb.passwordSecret.key: root-password
+              mariadb.database: test
+              client.writeInterval: 0.5
 
   # Profile for production-like setup with metrics
   - name: production

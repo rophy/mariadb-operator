@@ -1,0 +1,10 @@
+README.md
+chart/
+*.pyc
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+.git/
+.gitignore

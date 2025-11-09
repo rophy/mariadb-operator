@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mariadb-test-client.fullname" . }}
+  labels:
+    {{- include "mariadb-test-client.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "mariadb-test-client.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "mariadb-test-client.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      restartPolicy: {{ .Values.restartPolicy }}
+      containers:
+      - name: {{ .Chart.Name }}
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 12 }}
+        image: "{{ .Values.image }}"
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        env:
+        - name: MARIADB_HOST
+          value: {{ .Values.mariadb.host | quote }}
+        - name: MARIADB_PORT
+          value: {{ .Values.mariadb.port | quote }}
+        - name: MARIADB_USER
+          value: {{ .Values.mariadb.user | quote }}
+        - name: MARIADB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.mariadb.passwordSecret.name }}
+              key: {{ .Values.mariadb.passwordSecret.key }}
+        - name: MARIADB_DATABASE
+          value: {{ .Values.mariadb.database | quote }}
+        - name: WRITE_INTERVAL
+          value: {{ .Values.client.writeInterval | quote }}
+        {{- if .Values.client.id }}
+        - name: CLIENT_ID
+          value: {{ .Values.client.id | quote }}
+        {{- else }}
+        - name: CLIENT_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        {{- end }}
+        resources:
+          {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

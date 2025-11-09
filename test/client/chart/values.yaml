@@ -1,0 +1,64 @@
+# Default values for mariadb-test-client
+
+replicaCount: 1
+
+# Full image reference (repository:tag) - will be overridden by Skaffold
+image: mariadb-test-client:latest
+
+# Image pull policy
+imagePullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# MariaDB connection settings
+mariadb:
+  # Host can be a service name (e.g., mariadb-cluster, mariadb-cluster-primary)
+  host: mariadb-cluster
+  port: 3306
+  user: root
+  # Password secret reference
+  passwordSecret:
+    name: mariadb
+    key: root-password
+  database: test
+
+# Test client settings
+client:
+  # Unique identifier for this client (will use pod name if not set)
+  id: ""
+  # Seconds between writes
+  writeInterval: 1.0
+
+# Pod settings
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Restart policy for the pod
+restartPolicy: Always
