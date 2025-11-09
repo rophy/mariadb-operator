@@ -49,3 +49,6 @@ pprof.out
 .nvim.lua
 
 .envrc
+
+deploy/charts/**/charts/
+
