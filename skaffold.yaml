@@ -127,6 +127,28 @@ portForward:
     localPort: 3306
 
 profiles:
+  # Profile for installing Istio control plane (base + istiod)
+  - name: istio
+    manifests:
+      helm:
+        releases:
+          - name: istio-base
+            remoteChart: base
+            repo: https://istio-release.storage.googleapis.com/charts
+            namespace: istio-system
+            createNamespace: true
+            upgradeOnChange: true
+            wait: true
+            version: 1.16.7
+          - name: istiod
+            remoteChart: istiod
+            repo: https://istio-release.storage.googleapis.com/charts
+            namespace: istio-system
+            createNamespace: true
+            upgradeOnChange: true
+            wait: true
+            version: 1.16.7
+
   # Profile for running with webhook enabled
   - name: webhook
     manifests:
