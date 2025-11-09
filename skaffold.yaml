@@ -21,83 +21,8 @@ build:
   tagPolicy:
     gitCommit:
       variant: AbbrevCommitSha
-manifests:
-  helm:
-    releases:
-      # Install CRDs first
-      - name: mariadb-operator-crds
-        chartPath: deploy/charts/mariadb-operator-crds
-        namespace: mariadb-system
-        createNamespace: true
-        upgradeOnChange: true
-        wait: true
-        setValueTemplates:
-          # CRDs should be kept up to date
-        version: 25.10.2
 
-      # Install the operator
-      - name: mariadb-operator
-        chartPath: deploy/charts/mariadb-operator
-        namespace: mariadb-system
-        createNamespace: true
-        upgradeOnChange: true
-        wait: true
-        setValueTemplates:
-          # Use the built image
-          image.repository: mariadb-operator
-          image.tag: "{{.IMAGE_TAG}}"
-          image.pullPolicy: IfNotPresent
-        setValues:
-          # Disable webhook for simpler local development
-          webhook.enabled: false
-          # Disable cert-controller (webhook dependency)
-          certController.enabled: false
-          # Log level for debugging
-          logLevel: DEBUG
-          # Disable high availability for local dev
-          ha.enabled: false
-        version: 25.10.2
-
-      # Deploy a single MariaDB instance
-      - name: mariadb-cluster
-        chartPath: deploy/charts/mariadb-cluster
-        namespace: default
-        createNamespace: false
-        upgradeOnChange: true
-        wait: true
-        setValues:
-          # Simple standalone MariaDB (not Galera cluster)
-          mariadb.replicas: 1
-          mariadb.galera.enabled: false
-          mariadb.storage.size: 2Gi
-          mariadb.rootPasswordSecretKeyRef.name: mariadb
-          mariadb.rootPasswordSecretKeyRef.key: root-password
-          # Create test database automatically via Database CR
-          databases:
-            - name: test
-              characterSet: utf8mb4
-              collate: utf8mb4_unicode_ci
-        version: 25.10.2
-
-      # Deploy test client
-      - name: mariadb-test-client
-        chartPath: test/client/chart
-        namespace: default
-        createNamespace: false
-        upgradeOnChange: true
-        wait: false
-        setValueTemplates:
-          image: "{{.IMAGE_FULLY_QUALIFIED_mariadb_test_client}}"
-        setValues:
-          imagePullPolicy: IfNotPresent
-          mariadb.host: mariadb-cluster
-          mariadb.port: 3306
-          mariadb.user: root
-          mariadb.passwordSecret.name: mariadb
-          mariadb.passwordSecret.key: root-password
-          mariadb.database: test
-          client.writeInterval: 1.0
-
+# Default deployment: replication setup (1 primary, 2 replicas)
 deploy:
   helm:
     hooks:
@@ -107,24 +32,122 @@ deploy:
               - sh
               - -c
               - |
-                # Create password secrets if they don't exist
+                # Create mariadb namespace if it doesn't exist
+                kubectl create namespace mariadb --dry-run=client -o yaml | kubectl apply -f -
+                # Create password secrets in mariadb namespace
                 kubectl create secret generic mariadb \
                   --from-literal=root-password=mariadb-root-password \
                   --from-literal=app-password=mariadb-app-password \
-                  --namespace=default \
+                  --namespace=mariadb \
                   --dry-run=client -o yaml | kubectl apply -f -
 
-portForward:
-  - resourceType: service
-    resourceName: mariadb-operator
-    namespace: mariadb-system
-    port: 8080
-    localPort: 8080
-  - resourceType: service
-    resourceName: mariadb-cluster
-    namespace: default
-    port: 3306
-    localPort: 3306
+manifests:
+  helm:
+    releases:
+      - name: mariadb-operator-crds
+        chartPath: deploy/charts/mariadb-operator-crds
+        namespace: mariadb-system
+        createNamespace: true
+        upgradeOnChange: true
+        wait: true
+        version: 25.10.2
+      - name: mariadb-operator
+        chartPath: deploy/charts/mariadb-operator
+        namespace: mariadb-system
+        createNamespace: true
+        upgradeOnChange: true
+        wait: true
+        setValueTemplates:
+          image.repository: mariadb-operator
+          image.tag: "{{.IMAGE_TAG}}"
+          image.pullPolicy: IfNotPresent
+        setValues:
+          webhook.enabled: false
+          certController.enabled: false
+          logLevel: DEBUG
+          ha.enabled: false
+        version: 25.10.2
+      - name: mariadb-cluster
+        chartPath: deploy/charts/mariadb-cluster
+        namespace: mariadb
+        upgradeOnChange: true
+        wait: true
+        setValues:
+          mariadb.replicas: 3
+          mariadb.galera.enabled: false
+          mariadb.replication.enabled: true
+          mariadb.storage.size: 2Gi
+          mariadb.rootPasswordSecretKeyRef.name: mariadb
+          mariadb.rootPasswordSecretKeyRef.key: root-password
+          # Create test database automatically via Database CR
+          databases:
+            - name: test
+              characterSet: utf8mb4
+              collate: utf8mb4_unicode_ci
+          # Create app user without SUPER privilege for realistic testing
+          users:
+            - name: appuser
+              passwordSecretKeyRef:
+                name: mariadb
+                key: app-password
+              maxUserConnections: 100
+          grants:
+            - name: appuser-test-grant
+              database: test
+              table: "*"
+              username: appuser
+              privileges:
+                - SELECT
+                - INSERT
+                - UPDATE
+                - DELETE
+                - CREATE
+                - DROP
+                - INDEX
+                - ALTER
+          # Note: Replication config would need additional CRs
+          # See examples/manifests/mariadb_replication.yaml
+        version: 25.10.2
+      # Deploy Istio Gateway (deployment + Gateway CR + VirtualService)
+      - name: mariadb-gateway
+        chartPath: deploy/charts/mariadb-gateway
+        namespace: mariadb
+        upgradeOnChange: true
+        wait: true
+        setValues:
+          clusterName: mariadb-cluster
+          gateway.name: mariadb-gateway
+          gateway.namespace: mariadb
+          gateway.port: 3306
+          gateway.selector.istio: mariadb-ingress
+          virtualService.name: mariadb-vs
+          virtualService.backendService: mariadb-cluster-primary
+          virtualService.backendPort: 3306
+          # Gateway deployment configuration (values for subchart)
+          istio-gateway.labels.app: mariadb-gateway
+          istio-gateway.labels.istio: mariadb-ingress
+          istio-gateway.service.type: ClusterIP
+          istio-gateway.resources.requests.cpu: 100m
+          istio-gateway.resources.requests.memory: 128Mi
+          istio-gateway.resources.limits.cpu: 500m
+          istio-gateway.resources.limits.memory: 512Mi
+      - name: mariadb-test-client
+        chartPath: test/client/chart
+        namespace: mariadb
+        upgradeOnChange: true
+        wait: false
+        setValueTemplates:
+          image: "{{.IMAGE_FULLY_QUALIFIED_mariadb_test_client}}"
+        setValues:
+          imagePullPolicy: IfNotPresent
+          # Connect through dedicated Gateway (Gateway/VirtualService created separately)
+          mariadb.host: mariadb-gateway.mariadb.svc.cluster.local
+          mariadb.port: 3306
+          mariadb.user: appuser
+          mariadb.passwordSecret.name: mariadb
+          mariadb.passwordSecret.key: app-password
+          mariadb.database: test
+          client.writeInterval: 0.5
 
 profiles:
   # Profile for installing Istio control plane (base + istiod)
@@ -148,221 +171,3 @@ profiles:
             upgradeOnChange: true
             wait: true
             version: 1.16.7
-
-  # Profile for running with webhook enabled
-  - name: webhook
-    manifests:
-      helm:
-        releases:
-          - name: mariadb-operator-crds
-            chartPath: deploy/charts/mariadb-operator-crds
-            namespace: mariadb-system
-            createNamespace: true
-            upgradeOnChange: true
-            wait: true
-            version: 25.10.2
-          - name: mariadb-operator
-            chartPath: deploy/charts/mariadb-operator
-            namespace: mariadb-system
-            createNamespace: true
-            upgradeOnChange: true
-            wait: true
-            setValueTemplates:
-              image.repository: mariadb-operator
-              image.tag: "{{.IMAGE_TAG}}"
-              image.pullPolicy: IfNotPresent
-            setValues:
-              webhook.enabled: true
-              certController.enabled: true
-              logLevel: DEBUG
-              ha.enabled: false
-            version: 25.10.2
-          - name: mariadb-cluster
-            chartPath: deploy/charts/mariadb-cluster
-            namespace: default
-            upgradeOnChange: true
-            wait: true
-            setValues:
-              mariadb.replicas: 1
-              mariadb.galera.enabled: false
-              mariadb.storage.size: 2Gi
-            version: 25.10.2
-
-  # Profile for Galera cluster (3 replicas)
-  - name: galera
-    manifests:
-      helm:
-        releases:
-          - name: mariadb-operator-crds
-            chartPath: deploy/charts/mariadb-operator-crds
-            namespace: mariadb-system
-            createNamespace: true
-            upgradeOnChange: true
-            wait: true
-            version: 25.10.2
-          - name: mariadb-operator
-            chartPath: deploy/charts/mariadb-operator
-            namespace: mariadb-system
-            createNamespace: true
-            upgradeOnChange: true
-            wait: true
-            setValueTemplates:
-              image.repository: mariadb-operator
-              image.tag: "{{.IMAGE_TAG}}"
-              image.pullPolicy: IfNotPresent
-            setValues:
-              webhook.enabled: false
-              certController.enabled: false
-              logLevel: DEBUG
-              ha.enabled: false
-            version: 25.10.2
-          - name: mariadb-cluster
-            chartPath: deploy/charts/mariadb-cluster
-            namespace: default
-            upgradeOnChange: true
-            wait: true
-            setValues:
-              mariadb.replicas: 3
-              mariadb.galera.enabled: true
-              mariadb.storage.size: 2Gi
-            version: 25.10.2
-
-  # Profile for replication setup (1 primary, 2 replicas)
-  - name: replication
-    manifests:
-      helm:
-        releases:
-          - name: mariadb-operator-crds
-            chartPath: deploy/charts/mariadb-operator-crds
-            namespace: mariadb-system
-            createNamespace: true
-            upgradeOnChange: true
-            wait: true
-            version: 25.10.2
-          - name: mariadb-operator
-            chartPath: deploy/charts/mariadb-operator
-            namespace: mariadb-system
-            createNamespace: true
-            upgradeOnChange: true
-            wait: true
-            setValueTemplates:
-              image.repository: mariadb-operator
-              image.tag: "{{.IMAGE_TAG}}"
-              image.pullPolicy: IfNotPresent
-            setValues:
-              webhook.enabled: false
-              certController.enabled: false
-              logLevel: DEBUG
-              ha.enabled: false
-            version: 25.10.2
-          - name: mariadb-cluster
-            chartPath: deploy/charts/mariadb-cluster
-            namespace: default
-            upgradeOnChange: true
-            wait: true
-            setValues:
-              mariadb.replicas: 3
-              mariadb.galera.enabled: false
-              mariadb.replication.enabled: true
-              mariadb.storage.size: 2Gi
-              mariadb.rootPasswordSecretKeyRef.name: mariadb
-              mariadb.rootPasswordSecretKeyRef.key: root-password
-              # Create test database automatically via Database CR
-              databases:
-                - name: test
-                  characterSet: utf8mb4
-                  collate: utf8mb4_unicode_ci
-              # Create app user without SUPER privilege for realistic testing
-              users:
-                - name: appuser
-                  passwordSecretKeyRef:
-                    name: mariadb
-                    key: app-password
-                  maxUserConnections: 100
-              grants:
-                - name: appuser-test-grant
-                  database: test
-                  table: "*"
-                  username: appuser
-                  privileges:
-                    - SELECT
-                    - INSERT
-                    - UPDATE
-                    - DELETE
-                    - CREATE
-                    - DROP
-                    - INDEX
-                    - ALTER
-              # Note: Replication config would need additional CRs
-              # See examples/manifests/mariadb_replication.yaml
-            version: 25.10.2
-          - name: mariadb-test-client
-            chartPath: test/client/chart
-            namespace: default
-            upgradeOnChange: true
-            wait: false
-            setValueTemplates:
-              image: "{{.IMAGE_FULLY_QUALIFIED_mariadb_test_client}}"
-            setValues:
-              imagePullPolicy: IfNotPresent
-              # Connect to primary service for replication testing
-              mariadb.host: mariadb-cluster-primary
-              mariadb.port: 3306
-              mariadb.user: appuser
-              mariadb.passwordSecret.name: mariadb
-              mariadb.passwordSecret.key: app-password
-              mariadb.database: test
-              client.writeInterval: 0.5
-
-  # Profile for production-like setup with metrics
-  - name: production
-    manifests:
-      helm:
-        releases:
-          - name: mariadb-operator-crds
-            chartPath: deploy/charts/mariadb-operator-crds
-            namespace: mariadb-system
-            createNamespace: true
-            upgradeOnChange: true
-            wait: true
-            version: 25.10.2
-          - name: mariadb-operator
-            chartPath: deploy/charts/mariadb-operator
-            namespace: mariadb-system
-            createNamespace: true
-            upgradeOnChange: true
-            wait: true
-            setValueTemplates:
-              image.repository: mariadb-operator
-              image.tag: "{{.IMAGE_TAG}}"
-              image.pullPolicy: IfNotPresent
-            setValues:
-              webhook.enabled: true
-              certController.enabled: true
-              logLevel: INFO
-              ha.enabled: true
-              ha.replicas: 3
-              metrics.enabled: true
-              metrics.serviceMonitor.enabled: true
-            version: 25.10.2
-          - name: mariadb-cluster
-            chartPath: deploy/charts/mariadb-cluster
-            namespace: default
-            upgradeOnChange: true
-            wait: true
-            setValues:
-              mariadb.replicas: 3
-              mariadb.galera.enabled: true
-              mariadb.storage.size: 10Gi
-            version: 25.10.2
-    portForward:
-      - resourceType: service
-        resourceName: mariadb-operator
-        namespace: mariadb-system
-        port: 8080
-        localPort: 8080
-      - resourceType: service
-        resourceName: mariadb-cluster
-        namespace: default
-        port: 3306
-        localPort: 3306

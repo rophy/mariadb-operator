@@ -1,0 +1,50 @@
+# Gateway and VirtualService configuration for MariaDB cluster
+
+# Name of the MariaDB cluster
+clusterName: mariadb-cluster
+
+# Gateway configuration
+gateway:
+  # Name of the gateway
+  name: mariadb-gateway
+  # Namespace where the Istio Gateway deployment is running
+  namespace: mariadb
+  # Port for MariaDB TCP traffic
+  port: 3306
+  # Selector for the Istio Gateway pods
+  selector:
+    istio: mariadb-ingress
+
+# VirtualService configuration
+virtualService:
+  # Name of the VirtualService
+  name: mariadb-vs
+  # Backend MariaDB service to route to
+  backendService: mariadb-cluster-primary
+  # Port of the backend service
+  backendPort: 3306
+
+# Istio Gateway deployment configuration (passed to gateway subchart)
+istio-gateway:
+  # Labels for Gateway pods
+  labels:
+    app: mariadb-gateway
+    istio: mariadb-ingress
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    ports:
+      - name: tcp-mariadb
+        port: 3306
+        protocol: TCP
+        targetPort: 3306
+
+  # Resource limits for Gateway pods
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

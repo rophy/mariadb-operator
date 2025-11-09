@@ -1,0 +1,21 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ .Values.virtualService.name }}
+  namespace: {{ .Values.gateway.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Values.clusterName }}
+    app.kubernetes.io/component: virtualservice
+spec:
+  hosts:
+  - {{ .Values.gateway.name }}.{{ .Values.gateway.namespace }}.svc.cluster.local
+  gateways:
+  - {{ .Values.gateway.namespace }}/{{ .Values.gateway.name }}
+  tcp:
+  - match:
+    - port: {{ .Values.gateway.port }}
+    route:
+    - destination:
+        host: {{ .Values.virtualService.backendService }}
+        port:
+          number: {{ .Values.virtualService.backendPort }}

@@ -1,0 +1,12 @@
+apiVersion: v2
+name: mariadb-gateway
+description: Istio Gateway deployment and configuration for MariaDB cluster
+type: application
+version: 0.1.0
+appVersion: "1.0"
+
+dependencies:
+  - name: gateway
+    version: 1.16.7
+    repository: https://istio-release.storage.googleapis.com/charts
+    alias: istio-gateway

@@ -1,0 +1,18 @@
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: {{ .Values.gateway.name }}
+  namespace: {{ .Values.gateway.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Values.clusterName }}
+    app.kubernetes.io/component: gateway
+spec:
+  selector:
+    {{- toYaml .Values.gateway.selector | nindent 4 }}
+  servers:
+  - port:
+      number: {{ .Values.gateway.port }}
+      name: tcp-mariadb
+      protocol: TCP
+    hosts:
+    - "*"
