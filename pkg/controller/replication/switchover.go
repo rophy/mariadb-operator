@@ -93,6 +93,14 @@ func (r *ReplicationReconciler) reconcileSwitchover(ctx context.Context, req *Re
 			name:      "Change primary to replica",
 			reconcile: r.changePrimaryToReplica,
 		},
+		{
+			name:      "Restart Gateway pods",
+			reconcile: r.restartGatewayPods,
+		},
+		{
+			name:      "Wait for Gateway ready",
+			reconcile: r.waitForGatewayReady,
+		},
 	}
 
 	for _, p := range phases {

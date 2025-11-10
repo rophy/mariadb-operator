@@ -21,6 +21,12 @@ const (
 	ReasonReplicationReplicaConn = "ReplicaConn"
 	// ReasonReplicationPrimaryToReplica indicates that current primary is being unlocked to become a replica.
 	ReasonReplicationPrimaryToReplica = "PrimaryToReplica"
+	// ReasonReplicationGatewayRestart indicates that Gateway pods are being restarted.
+	ReasonReplicationGatewayRestart = "GatewayRestart"
+	// ReasonReplicationGatewayWait indicates that waiting for Gateway pods to be ready.
+	ReasonReplicationGatewayWait = "GatewayWait"
+	// ReasonReplicationGatewayWaitErr indicates that an error has happened while waiting for Gateway pods.
+	ReasonReplicationGatewayWaitErr = "GatewayWaitErr"
 
 	// ReasonGaleraClusterHealthy indicates that the cluster is healthy,
 	ReasonGaleraClusterHealthy = "GaleraClusterHealthy"
