@@ -129,7 +129,15 @@ manifests:
                 - INDEX
                 - ALTER
         version: 25.10.2
-      - name: mariadb-test-client
+      - name: mariadb-gateway
+        chartPath: deploy/charts/mariadb-gateway
+        namespace: mariadb
+        upgradeOnChange: true
+        wait: true
+        setValues:
+          clusterName: mariadb-cluster
+        version: 25.10.2
+      - name: mariadb-test-client-proxysql
         chartPath: test/client/chart
         namespace: mariadb
         upgradeOnChange: true
@@ -137,10 +145,29 @@ manifests:
         setValueTemplates:
           image: "{{.IMAGE_FULLY_QUALIFIED_mariadb_test_client}}"
         setValues:
+          nameOverride: mariadb-test-client-proxysql
           imagePullPolicy: IfNotPresent
-          # Connect through ProxySQL (replaces Istio Gateway)
+          # Connect through ProxySQL
           mariadb.host: mariadb-cluster-proxysql.mariadb.svc.cluster.local
           mariadb.port: 6033
+          mariadb.user: appuser
+          mariadb.passwordSecret.name: mariadb
+          mariadb.passwordSecret.key: app-password
+          mariadb.database: test
+          client.writeInterval: 0.5
+      - name: mariadb-test-client-gateway
+        chartPath: test/client/chart
+        namespace: mariadb
+        upgradeOnChange: true
+        wait: false
+        setValueTemplates:
+          image: "{{.IMAGE_FULLY_QUALIFIED_mariadb_test_client}}"
+        setValues:
+          nameOverride: mariadb-test-client-gateway
+          imagePullPolicy: IfNotPresent
+          # Connect through Istio Gateway
+          mariadb.host: mariadb-gateway.mariadb.svc.cluster.local
+          mariadb.port: 3306
           mariadb.user: appuser
           mariadb.passwordSecret.name: mariadb
           mariadb.passwordSecret.key: app-password
