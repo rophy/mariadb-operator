@@ -85,6 +85,7 @@ class MariaDBClient:
         self.successful_writes = 0
         self.failed_writes = 0
         self.connection_errors = 0
+        self.reconnection_count = 0  # Track successful reconnections
         self.last_success_time: Optional[datetime] = None
         self.last_error_time: Optional[datetime] = None
 
@@ -172,6 +173,9 @@ class MariaDBClient:
 
         start_time = time.time()
 
+        # Check if we're currently connected
+        was_connected = self.connection and self.connection.is_connected()
+
         try:
             if not self.ensure_connection():
                 latency_ms = (time.time() - start_time) * 1000
@@ -182,6 +186,23 @@ class MariaDBClient:
                     success=False,
                     latency_ms=latency_ms,
                     error="Connection lost"
+                )
+
+            # If we had to reconnect, count this as a failure (connection interruption)
+            if not was_connected:
+                self.reconnection_count += 1
+                latency_ms = (time.time() - start_time) * 1000
+                self.failed_writes += 1
+                self.last_error_time = datetime.now()
+                logger.warning(
+                    f"⚠ Connection was lost, reconnected successfully but counting as failure "
+                    f"(reconnection #{self.reconnection_count}, latency: {latency_ms:.2f}ms)"
+                )
+                return WriteResult(
+                    sequence=self.current_sequence,
+                    success=False,
+                    latency_ms=latency_ms,
+                    error="Connection interruption (reconnected)"
                 )
 
             cursor = self.connection.cursor()
@@ -262,7 +283,8 @@ class MariaDBClient:
         logger.info(f"Total Writes:         {self.total_writes}")
         logger.info(f"Successful Writes:    {self.successful_writes}")
         logger.info(f"Failed Writes:        {self.failed_writes}")
-        logger.info(f"Connection Errors:    {self.connection_errors}")
+        logger.info(f"  - Connection Interruptions: {self.reconnection_count}")
+        logger.info(f"  - Connection Errors:        {self.connection_errors}")
         logger.info(f"Success Rate:         {self.get_success_rate():.2f}%")
 
         if self.last_success_time:
