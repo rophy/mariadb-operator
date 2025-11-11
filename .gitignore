@@ -52,3 +52,4 @@ pprof.out
 
 deploy/charts/**/charts/
 
+logs/
