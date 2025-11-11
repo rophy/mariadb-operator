@@ -24,7 +24,7 @@ build:
     gitCommit:
       variant: AbbrevCommitSha
 
-# Default deployment: replication setup (1 primary, 2 replicas)
+# Default deployment: replication setup (1 primary, 2 replicas) with ProxySQL
 deploy:
   helm:
     hooks:
@@ -81,6 +81,27 @@ manifests:
           mariadb.storage.size: 2Gi
           mariadb.rootPasswordSecretKeyRef.name: mariadb
           mariadb.rootPasswordSecretKeyRef.key: root-password
+          # ProxySQL configuration
+          proxysql.enabled: true
+          proxysql.replicas: 3
+          proxysql.admin.password: "dev-admin-password-123"
+          proxysql.admin.clusterPassword: "dev-cluster-password-456"
+          proxysql.monitor.password: "dev-monitor-password-789"
+          proxysql.users:
+            - username: root
+              passwordSecretKeyRef:
+                name: mariadb
+                key: root-password
+              defaultHostgroup: 10
+              maxConnections: 200
+              active: true
+            - username: appuser
+              passwordSecretKeyRef:
+                name: mariadb
+                key: app-password
+              defaultHostgroup: 10
+              maxConnections: 100
+              active: true
           # Create test database automatically via Database CR
           databases:
             - name: test
@@ -107,32 +128,7 @@ manifests:
                 - DROP
                 - INDEX
                 - ALTER
-          # Note: Replication config would need additional CRs
-          # See examples/manifests/mariadb_replication.yaml
         version: 25.10.2
-      # Deploy Istio Gateway (deployment + Gateway CR + VirtualService)
-      - name: mariadb-gateway
-        chartPath: deploy/charts/mariadb-gateway
-        namespace: mariadb
-        upgradeOnChange: true
-        wait: true
-        setValues:
-          clusterName: mariadb-cluster
-          gateway.name: mariadb-gateway
-          gateway.namespace: mariadb
-          gateway.port: 3306
-          gateway.selector.istio: mariadb-ingress
-          virtualService.name: mariadb-vs
-          virtualService.backendService: mariadb-cluster-primary
-          virtualService.backendPort: 3306
-          # Gateway deployment configuration (values for subchart)
-          istio-gateway.labels.app: mariadb-gateway
-          istio-gateway.labels.istio: mariadb-ingress
-          istio-gateway.service.type: ClusterIP
-          istio-gateway.resources.requests.cpu: 100m
-          istio-gateway.resources.requests.memory: 128Mi
-          istio-gateway.resources.limits.cpu: 500m
-          istio-gateway.resources.limits.memory: 512Mi
       - name: mariadb-test-client
         chartPath: test/client/chart
         namespace: mariadb
@@ -142,9 +138,9 @@ manifests:
           image: "{{.IMAGE_FULLY_QUALIFIED_mariadb_test_client}}"
         setValues:
           imagePullPolicy: IfNotPresent
-          # Connect through dedicated Gateway (Gateway/VirtualService created separately)
-          mariadb.host: mariadb-gateway.mariadb.svc.cluster.local
-          mariadb.port: 3306
+          # Connect through ProxySQL (replaces Istio Gateway)
+          mariadb.host: mariadb-cluster-proxysql.mariadb.svc.cluster.local
+          mariadb.port: 6033
           mariadb.user: appuser
           mariadb.passwordSecret.name: mariadb
           mariadb.passwordSecret.key: app-password
