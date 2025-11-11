@@ -37,6 +37,8 @@ data:
         monitor_ping_interval={{ .Values.proxysql.monitoring.pingInterval }}
         monitor_read_only_interval={{ .Values.proxysql.monitoring.readOnlyInterval }}
         monitor_read_only_timeout={{ .Values.proxysql.monitoring.readOnlyTimeout }}
+        monitor_local_dns_cache_ttl=0
+        monitor_local_dns_cache_refresh_interval=0
         {{- range $key, $value := .Values.proxysql.advanced.mysqlVariables }}
         {{ $key }}={{ $value }}
         {{- end }}
