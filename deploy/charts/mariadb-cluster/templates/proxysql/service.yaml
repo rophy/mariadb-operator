@@ -1,0 +1,39 @@
+{{- if .Values.proxysql.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mariadb-cluster.proxysql.serviceName" . }}
+  namespace: {{ include "mariadb-cluster.namespace" . }}
+  labels:
+    {{- include "mariadb-cluster.proxysql.labels" . | nindent 4 }}
+  {{- with .Values.proxysql.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.proxysql.service.type }}
+  {{- if and (eq .Values.proxysql.service.type "LoadBalancer") .Values.proxysql.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.proxysql.service.loadBalancerIP }}
+  {{- end }}
+  {{- if and (eq .Values.proxysql.service.type "LoadBalancer") .Values.proxysql.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml .Values.proxysql.service.loadBalancerSourceRanges | nindent 4 }}
+  {{- end }}
+  ports:
+  - name: mysql
+    port: {{ .Values.proxysql.service.mysql.port }}
+    targetPort: 6033
+    protocol: TCP
+    {{- if and (or (eq .Values.proxysql.service.type "NodePort") (eq .Values.proxysql.service.type "LoadBalancer")) .Values.proxysql.service.mysql.nodePort }}
+    nodePort: {{ .Values.proxysql.service.mysql.nodePort }}
+    {{- end }}
+  - name: admin
+    port: {{ .Values.proxysql.service.admin.port }}
+    targetPort: 6032
+    protocol: TCP
+    {{- if and (or (eq .Values.proxysql.service.type "NodePort") (eq .Values.proxysql.service.type "LoadBalancer")) .Values.proxysql.service.admin.nodePort }}
+    nodePort: {{ .Values.proxysql.service.admin.nodePort }}
+    {{- end }}
+  selector:
+    {{- include "mariadb-cluster.proxysql.selectorLabels" . | nindent 4 }}
+{{- end }}

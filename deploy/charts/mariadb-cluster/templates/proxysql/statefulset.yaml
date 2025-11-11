@@ -1,0 +1,181 @@
+{{- if .Values.proxysql.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "mariadb-cluster.proxysql.name" . }}
+  namespace: {{ include "mariadb-cluster.namespace" . }}
+  labels:
+    {{- include "mariadb-cluster.proxysql.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.proxysql.replicas }}
+  serviceName: {{ include "mariadb-cluster.proxysql.headlessServiceName" . }}
+  selector:
+    matchLabels:
+      {{- include "mariadb-cluster.proxysql.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/proxysql/configmap.yaml") . | sha256sum }}
+        checksum/credentials: {{ include (print $.Template.BasePath "/proxysql/secret.yaml") . | sha256sum }}
+        {{- with .Values.proxysql.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "mariadb-cluster.proxysql.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.proxysql.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+      - name: wait-mariadb
+        image: {{ .Values.proxysql.initContainer.image | default "busybox:1.36" }}
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for MariaDB to be ready..."
+          until nc -z {{ include "mariadb-cluster.fullname" . }}-internal 3306; do
+            echo "MariaDB not ready yet, sleeping 2s..."
+            sleep 2
+          done
+          echo "MariaDB is ready!"
+        {{- with .Values.proxysql.initContainer.securityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      - name: render-config
+        image: {{ .Values.proxysql.initContainer.image | default "busybox:1.36" }}
+        command:
+        - sh
+        - -c
+        - |
+          #!/bin/sh
+          set -e
+          echo "Rendering ProxySQL configuration with secrets..."
+
+          # Read template
+          cp /config-template/proxysql.cnf.template /tmp/proxysql.cnf
+
+          # Substitute environment variables
+          sed -i "s|\${PROXYSQL_ADMIN_PASSWORD}|${PROXYSQL_ADMIN_PASSWORD}|g" /tmp/proxysql.cnf
+          sed -i "s|\${PROXYSQL_CLUSTER_PASSWORD}|${PROXYSQL_CLUSTER_PASSWORD}|g" /tmp/proxysql.cnf
+          sed -i "s|\${PROXYSQL_MONITOR_PASSWORD}|${PROXYSQL_MONITOR_PASSWORD}|g" /tmp/proxysql.cnf
+
+          # Substitute user passwords
+          {{- range .Values.proxysql.users }}
+          sed -i "s|\${PROXYSQL_USER_{{ .username | toString | upper | replace "-" "_" }}_PASSWORD}|${PROXYSQL_USER_{{ .username | toString | upper | replace "-" "_" }}_PASSWORD}|g" /tmp/proxysql.cnf
+          {{- end }}
+
+          # Copy to final location
+          cp /tmp/proxysql.cnf /config/proxysql.cnf
+          echo "Configuration rendered successfully"
+        env:
+        - name: PROXYSQL_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "mariadb-cluster.proxysql.name" . }}-credentials
+              key: admin-password
+        - name: PROXYSQL_CLUSTER_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "mariadb-cluster.proxysql.name" . }}-credentials
+              key: cluster-password
+        - name: PROXYSQL_MONITOR_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "mariadb-cluster.proxysql.name" . }}-credentials
+              key: monitor-password
+        {{- range .Values.proxysql.users }}
+        - name: PROXYSQL_USER_{{ .username | toString | upper | replace "-" "_" }}_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ if .passwordSecretKeyRef }}{{ tpl .passwordSecretKeyRef.name $ }}{{ else }}{{ include "mariadb-cluster.proxysql.name" $ }}-credentials{{ end }}
+              key: {{ if .passwordSecretKeyRef }}{{ .passwordSecretKeyRef.key }}{{ else }}user-{{ .username | toString | replace "-" "_" }}-password{{ end }}
+        {{- end }}
+        volumeMounts:
+        - name: config-template
+          mountPath: /config-template
+        - name: config
+          mountPath: /config
+        {{- with .Values.proxysql.initContainer.securityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      containers:
+      - name: proxysql
+        image: "{{ .Values.proxysql.image.registry }}/{{ .Values.proxysql.image.repository }}:{{ .Values.proxysql.image.tag }}"
+        imagePullPolicy: {{ .Values.proxysql.image.pullPolicy }}
+        ports:
+        - name: mysql
+          containerPort: 6033
+          protocol: TCP
+        - name: admin
+          containerPort: 6032
+          protocol: TCP
+        volumeMounts:
+        - name: config
+          mountPath: /etc/proxysql.cnf
+          subPath: proxysql.cnf
+        - name: data
+          mountPath: /var/lib/proxysql
+        {{- if .Values.proxysql.livenessProbe.enabled }}
+        livenessProbe:
+          tcpSocket:
+            port: 6032
+          initialDelaySeconds: {{ .Values.proxysql.livenessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.proxysql.livenessProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.proxysql.livenessProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.proxysql.livenessProbe.failureThreshold }}
+        {{- end }}
+        {{- if .Values.proxysql.readinessProbe.enabled }}
+        readinessProbe:
+          tcpSocket:
+            port: 6033
+          initialDelaySeconds: {{ .Values.proxysql.readinessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.proxysql.readinessProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.proxysql.readinessProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.proxysql.readinessProbe.failureThreshold }}
+        {{- end }}
+        {{- with .Values.proxysql.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.proxysql.securityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      volumes:
+      - name: config-template
+        configMap:
+          name: {{ include "mariadb-cluster.proxysql.configName" . }}-template
+      - name: config
+        emptyDir: {}
+      {{- with .Values.proxysql.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.proxysql.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.proxysql.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      labels:
+        {{- include "mariadb-cluster.proxysql.labels" . | nindent 8 }}
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      {{- if .Values.proxysql.storage.storageClassName }}
+      storageClassName: {{ .Values.proxysql.storage.storageClassName }}
+      {{- end }}
+      resources:
+        requests:
+          storage: {{ .Values.proxysql.storage.size }}
+{{- end }}

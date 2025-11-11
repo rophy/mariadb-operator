@@ -1,0 +1,23 @@
+{{- if and .Values.proxysql.enabled .Values.proxysql.cluster.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mariadb-cluster.proxysql.headlessServiceName" . }}
+  namespace: {{ include "mariadb-cluster.namespace" . }}
+  labels:
+    {{- include "mariadb-cluster.proxysql.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+  - name: mysql
+    port: 6033
+    targetPort: 6033
+    protocol: TCP
+  - name: admin
+    port: 6032
+    targetPort: 6032
+    protocol: TCP
+  selector:
+    {{- include "mariadb-cluster.proxysql.selectorLabels" . | nindent 4 }}
+{{- end }}
