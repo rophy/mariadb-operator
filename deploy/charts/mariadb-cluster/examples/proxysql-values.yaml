@@ -1,0 +1,126 @@
+# Example values for deploying MariaDB cluster with ProxySQL
+# This demonstrates ProxySQL integration with automatic failover detection
+
+# MariaDB configuration
+mariadb:
+  # Enable replication (required for ProxySQL failover detection)
+  replicas: 3
+  replication:
+    enabled: true
+
+  # Root password
+  rootPasswordSecretKeyRef:
+    name: mariadb
+    key: root-password
+
+  storage:
+    size: 10Gi
+    # storageClassName: fast-ssd
+
+# ProxySQL configuration
+proxysql:
+  # Enable ProxySQL deployment
+  enabled: true
+
+  # Deploy 3 ProxySQL instances for HA
+  replicas: 3
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    # For external access, change to LoadBalancer or NodePort
+    # type: LoadBalancer
+
+  # REQUIRED: Admin credentials
+  admin:
+    password: "secure-admin-password-here"
+    clusterPassword: "secure-cluster-password-here"
+
+  # REQUIRED: Monitor user configuration (auto-created in MariaDB)
+  monitor:
+    username: "proxysql-monitor"
+    password: "secure-monitor-password-here"
+
+  # Hostgroup configuration for read/write split
+  hostgroups:
+    writer: 10  # Primary server
+    reader: 20  # Replica servers
+
+  # ProxySQL clustering (enables config synchronization)
+  cluster:
+    enabled: true
+
+  # Users for ProxySQL authentication
+  users:
+    - username: "root"
+      passwordSecretKeyRef:
+        name: "{{ .Release.Name }}"
+        key: "root-password"
+      defaultHostgroup: 10
+      maxConnections: 200
+      active: true
+
+    # Add application users
+    # - username: "app"
+    #   passwordSecretKeyRef:
+    #     name: "app-credentials"
+    #     key: "password"
+    #   defaultHostgroup: 10
+    #   maxConnections: 100
+    #   active: true
+
+  # Storage for ProxySQL runtime database
+  storage:
+    size: 5Gi
+    # storageClassName: fast-ssd
+
+  # Resource limits
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+  # Pod anti-affinity for HA
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/component
+                  operator: In
+                  values:
+                    - proxysql
+            topologyKey: kubernetes.io/hostname
+
+# Optional: Create application users in MariaDB
+users:
+  - name: app-user
+    passwordSecretKeyRef:
+      name: app-credentials
+      key: password
+    host: "%"
+    maxUserConnections: 50
+
+# Optional: Create application database
+databases:
+  - name: appdb
+    characterSet: utf8mb4
+    collate: utf8mb4_unicode_ci
+
+# Optional: Grant privileges to application user
+grants:
+  - name: app-grant
+    privileges:
+      - "SELECT"
+      - "INSERT"
+      - "UPDATE"
+      - "DELETE"
+    database: "appdb"
+    table: "*"
+    username: app-user
+    host: "%"

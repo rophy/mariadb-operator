@@ -1,0 +1,98 @@
+{{- if .Values.proxysql.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mariadb-cluster.proxysql.configName" . }}-template
+  namespace: {{ include "mariadb-cluster.namespace" . }}
+  labels:
+    {{- include "mariadb-cluster.proxysql.labels" . | nindent 4 }}
+data:
+  proxysql.cnf.template: |
+    datadir="/var/lib/proxysql"
+
+    admin_variables=
+    {
+        admin_credentials="admin:${PROXYSQL_ADMIN_PASSWORD};cluster:${PROXYSQL_CLUSTER_PASSWORD}"
+        mysql_ifaces="0.0.0.0:6032"
+        refresh_interval=2000
+        {{- if .Values.proxysql.cluster.enabled }}
+        cluster_username="cluster"
+        cluster_password="${PROXYSQL_CLUSTER_PASSWORD}"
+        {{- end }}
+        {{- range $key, $value := .Values.proxysql.advanced.adminVariables }}
+        {{ $key }}={{ $value }}
+        {{- end }}
+    }
+
+    mysql_variables=
+    {
+        threads={{ .Values.proxysql.mysql.threads }}
+        max_connections={{ .Values.proxysql.mysql.maxConnections }}
+        interfaces="{{ .Values.proxysql.mysql.interfaces }}"
+        server_version="{{ .Values.proxysql.mysql.serverVersion }}"
+
+        monitor_username="{{ .Values.proxysql.monitor.username }}"
+        monitor_password="${PROXYSQL_MONITOR_PASSWORD}"
+        monitor_connect_interval={{ .Values.proxysql.monitoring.connectInterval }}
+        monitor_ping_interval={{ .Values.proxysql.monitoring.pingInterval }}
+        monitor_read_only_interval={{ .Values.proxysql.monitoring.readOnlyInterval }}
+        monitor_read_only_timeout={{ .Values.proxysql.monitoring.readOnlyTimeout }}
+        {{- range $key, $value := .Values.proxysql.advanced.mysqlVariables }}
+        {{ $key }}={{ $value }}
+        {{- end }}
+    }
+
+    # Replication hostgroups enable automatic failover detection
+    mysql_replication_hostgroups =
+    (
+        {
+            writer_hostgroup={{ .Values.proxysql.hostgroups.writer }},
+            reader_hostgroup={{ .Values.proxysql.hostgroups.reader }},
+            comment="{{ .Values.proxysql.hostgroups.comment }}"
+        }
+    )
+
+    # Backend MariaDB servers
+    mysql_servers =
+    (
+        {{- $fullname := include "mariadb-cluster.fullname" . }}
+        {{- $namespace := include "mariadb-cluster.namespace" . }}
+        {{- $hostgroup := .Values.proxysql.hostgroups.writer }}
+        {{- $replicas := int .Values.mariadb.replicas }}
+        {{- range $i := until $replicas }}
+        { address="{{ $fullname }}-{{ $i }}.{{ $fullname }}-internal.{{ $namespace }}.svc.cluster.local", port=3306, hostgroup={{ $hostgroup }}, max_connections=100 }{{ if lt $i (sub $replicas 1) }},{{ end }}
+        {{- end }}
+    )
+
+    # ProxySQL users
+    mysql_users =
+    (
+        {{- $root := . }}
+        {{- $userCount := len .Values.proxysql.users }}
+        {{- range $idx, $user := .Values.proxysql.users }}
+        {
+            username="{{ $user.username }}",
+            password="${PROXYSQL_USER_{{ $user.username | toString | upper | replace "-" "_" }}_PASSWORD}",
+            default_hostgroup={{ $user.defaultHostgroup }},
+            {{- if $user.maxConnections }}
+            max_connections={{ $user.maxConnections }},
+            {{- end }}
+            active={{ if $user.active }}1{{ else }}0{{ end }}
+        }{{ if lt $idx (sub $userCount 1) }},{{ end }}
+        {{- end }}
+    )
+
+    {{- if .Values.proxysql.cluster.enabled }}
+    # ProxySQL cluster configuration
+    proxysql_servers =
+    (
+        {{- $fullname := include "mariadb-cluster.proxysql.name" . }}
+        {{- $namespace := include "mariadb-cluster.namespace" . }}
+        {{- $headlessService := include "mariadb-cluster.proxysql.headlessServiceName" . }}
+        {{- $replicas := int .Values.proxysql.replicas }}
+        {{- range $i := until $replicas }}
+        { hostname="{{ $fullname }}-{{ $i }}.{{ $headlessService }}.{{ $namespace }}.svc.cluster.local", port=6032, weight=1 }{{ if lt $i (sub $replicas 1) }},{{ end }}
+        {{- end }}
+    )
+    {{- end }}
+{{- end }}

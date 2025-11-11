@@ -112,3 +112,172 @@ physicalBackups: []
   #         caSecretKeyRef:
   #           name: minio-ca
   #           key: ca.crt
+# -- ProxySQL configuration
+# Enables ProxySQL deployment for connection pooling, query routing, and automatic failover detection
+# https://github.com/mariadb-operator/mariadb-operator/blob/main/docs/proxysql.md
+proxysql:
+  # -- Enable ProxySQL deployment
+  enabled: false
+
+  # -- ProxySQL image configuration
+  image:
+    registry: docker.io
+    repository: proxysql/proxysql
+    tag: "3.0.3-debian"
+    pullPolicy: IfNotPresent
+
+  # -- Number of ProxySQL replicas for HA
+  replicas: 3
+
+  # -- ProxySQL service configuration
+  service:
+    type: ClusterIP
+    annotations: {}
+    loadBalancerIP: ""
+    loadBalancerSourceRanges: []
+    mysql:
+      port: 6033
+      nodePort: null
+    admin:
+      port: 6032
+      nodePort: null
+
+  # -- ProxySQL admin credentials
+  # REQUIRED: Must provide passwords for security
+  admin:
+    # ProxySQL admin interface password (REQUIRED)
+    password: ""
+    # ProxySQL cluster synchronization password (REQUIRED if cluster.enabled=true)
+    clusterPassword: ""
+
+  # -- Monitor user configuration
+  monitor:
+    username: "proxysql-monitor"
+    # Monitor user password (REQUIRED)
+    # This user is auto-created in MariaDB with REPLICATION CLIENT + SUPER privileges
+    password: ""
+    # Reference to existing secret (optional)
+    existingSecret: ""
+    secretKey: "password"
+    maxUserConnections: 10
+
+  # -- Hostgroup configuration
+  hostgroups:
+    writer: 10
+    reader: 20
+    comment: "MariaDB Cluster"
+
+  # -- Monitoring intervals (milliseconds)
+  monitoring:
+    connectInterval: 60000
+    pingInterval: 10000
+    readOnlyInterval: 1500
+    readOnlyTimeout: 500
+
+  # -- MySQL variables configuration
+  mysql:
+    threads: 4
+    maxConnections: 2048
+    serverVersion: "8.0.23"
+    interfaces: "0.0.0.0:6033"
+
+  # -- ProxySQL clustering configuration
+  cluster:
+    # When enabled, ProxySQL instances sync configuration automatically
+    enabled: true
+
+  # -- Users to configure in ProxySQL
+  # These users must exist in MariaDB (via User CRs or mariadb.rootPasswordSecretKeyRef)
+  users:
+    - username: "root"
+      # Reference to existing secret (created by MariaDB chart)
+      passwordSecretKeyRef:
+        name: "{{ .Release.Name }}"
+        key: "root-password"
+      defaultHostgroup: 10
+      maxConnections: 200
+      active: true
+    # Additional users can be added
+    # - username: "app"
+    #   passwordSecretKeyRef:
+    #     name: "app-credentials"
+    #     key: "password"
+    #   defaultHostgroup: 10
+    #   maxConnections: 100
+    #   active: true
+
+  # -- Storage configuration for ProxySQL data
+  storage:
+    storageClassName: ""
+    size: 2Gi
+
+  # -- Resource limits
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+
+  # -- Liveness probe configuration
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  # -- Readiness probe configuration
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  # -- Init container configuration
+  initContainer:
+    image: "busybox:1.36"
+    securityContext: {}
+
+  # -- Pod annotations
+  podAnnotations: {}
+
+  # -- Pod security context
+  podSecurityContext:
+    fsGroup: 999
+
+  # -- Container security context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+
+  # -- Node selector
+  nodeSelector: {}
+
+  # -- Tolerations
+  tolerations: []
+
+  # -- Affinity rules
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/component
+                  operator: In
+                  values:
+                    - proxysql
+            topologyKey: kubernetes.io/hostname
+
+  # -- Advanced ProxySQL configuration
+  # Allows overriding any ProxySQL global variable
+  advanced:
+    adminVariables: {}
+      # refresh_interval: 2000
+    mysqlVariables: {}
+      # connect_timeout_server: 3000
+      # connect_retries_on_failure: 10

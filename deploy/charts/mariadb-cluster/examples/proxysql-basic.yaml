@@ -1,0 +1,23 @@
+# Basic ProxySQL deployment with MariaDB cluster
+# Minimal configuration to get started with ProxySQL
+
+mariadb:
+  replicas: 3
+  replication:
+    enabled: true
+  rootPasswordSecretKeyRef:
+    name: mariadb
+    key: root-password
+
+proxysql:
+  enabled: true
+  replicas: 3
+
+  # REQUIRED: Admin passwords
+  admin:
+    password: "change-me-admin-password"
+    clusterPassword: "change-me-cluster-password"
+
+  # REQUIRED: Monitor password
+  monitor:
+    password: "change-me-monitor-password"
