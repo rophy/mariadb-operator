@@ -213,6 +213,9 @@ def main():
     print(f"{Colors.YELLOW}[4/7] Deleting primary pod to trigger failover...{Colors.NC}")
     print(f"  Deleting {primary_pod}...")
 
+    # Start timing the failover
+    failover_start_time = time.time()
+
     delete_result = run_kubectl(['delete', 'pod', '-n', namespace, primary_pod])
 
     if delete_result.returncode != 0:
@@ -228,12 +231,17 @@ def main():
     if not new_primary:
         print(f"{Colors.RED}✗ Failover failed{Colors.NC}")
         return 1
-    print()
+
+    failover_election_time = time.time() - failover_start_time
+    print(f"  Failover election completed in {failover_election_time:.1f}s\n")
 
     # Step 6: Analyze client failures during failover
     print(f"{Colors.YELLOW}[6/7] Analyzing client behavior during failover...{Colors.NC}")
     print(f"  Waiting 5s for writes to stabilize...\n")
     time.sleep(5)
+
+    # Total failover duration from deletion to recovery
+    total_failover_time = time.time() - failover_start_time
 
     failover_summary = {}
 
@@ -249,13 +257,19 @@ def main():
 
         success_rate = (success_during / writes_during * 100) if writes_during > 0 else 0
 
+        # Calculate interruption duration: failures * write_interval
+        # Test clients write every 0.5 seconds
+        write_interval = 0.5
+        interruption_duration = failures_during * write_interval
+
         failover_summary[client_type] = {
             'writes': writes_during,
             'failures': failures_during,
             'successes': success_during,
             'interruptions': interruptions,
             'connection_errors': conn_errors,
-            'success_rate': success_rate
+            'success_rate': success_rate,
+            'interruption_duration': interruption_duration
         }
 
         print(f"  {client_type.capitalize()} client:")
@@ -265,6 +279,7 @@ def main():
         print(f"      - Connection interruptions: {interruptions}")
         print(f"      - Connection errors: {conn_errors}")
         print(f"    Success rate: {success_rate:.2f}%")
+        print(f"    Interruption duration: ~{interruption_duration:.1f}s")
         print()
 
     # Step 7: Verify data consistency
@@ -305,14 +320,17 @@ def main():
     print(f"{Colors.GREEN}Failover Test Summary{Colors.NC}")
     print(f"{Colors.GREEN}{'='*80}{Colors.NC}\n")
 
-    print(f"Failover: {primary_pod} → {new_primary}\n")
+    print(f"Failover: {primary_pod} → {new_primary}")
+    print(f"Election time: {failover_election_time:.1f}s")
+    print(f"Total failover duration: {total_failover_time:.1f}s\n")
 
     if failover_summary:
         print("Client Behavior During Failover:\n")
         for client_type, stats in failover_summary.items():
             print(f"  {client_type.capitalize()}:")
             print(f"    Failures: {stats['failures']}/{stats['writes']} ({100-stats['success_rate']:.2f}%)")
-            print(f"    Interruptions: {stats['interruptions']}")
+            print(f"    Interruption duration: ~{stats['interruption_duration']:.1f}s")
+            print(f"    Connection interruptions: {stats['interruptions']}")
             print(f"    Connection errors: {stats['connection_errors']}")
         print()
 
