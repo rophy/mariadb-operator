@@ -26,6 +26,13 @@ virtualService:
 
 # Istio Gateway deployment configuration (passed to gateway subchart)
 istio-gateway:
+  # Number of gateway pod replicas
+  replicaCount: 2
+
+  # Disable autoscaling to use fixed replica count
+  autoscaling:
+    enabled: false
+
   # Labels for Gateway pods
   labels:
     app: mariadb-gateway
