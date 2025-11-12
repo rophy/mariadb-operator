@@ -81,6 +81,7 @@ manifests:
           mariadb.storage.size: 2Gi
           mariadb.rootPasswordSecretKeyRef.name: mariadb
           mariadb.rootPasswordSecretKeyRef.key: root-password
+          mariadb.annotations.mariadb\.mmontes\.io/gateway: deployment/mariadb-gateway
           # ProxySQL configuration
           proxysql.enabled: true
           proxysql.replicas: 3

@@ -98,8 +98,10 @@ rules:
   - deployments
   verbs:
   - create
+  - get
   - list
   - patch
+  - update
   - watch
 - apiGroups:
   - apps
@@ -111,6 +113,7 @@ rules:
   - get
   - list
   - patch
+  - update
   - watch
 - apiGroups:
   - authentication.k8s.io

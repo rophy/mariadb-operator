@@ -5,5 +5,9 @@ metadata:
   namespace: {{ include "mariadb-cluster.namespace" . }}
   labels:
     {{- include "mariadb-cluster.labels" . | nindent 4 }}
+  {{- with .Values.mariadb.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  {{- toYaml .Values.mariadb | nindent 2 }}
+  {{- toYaml (omit .Values.mariadb "annotations") | nindent 2 }}
