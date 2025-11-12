@@ -101,10 +101,8 @@ class MariaDBClient:
                 database=self.database,
                 autocommit=True,
                 connection_timeout=5,
-                # Enable connection pool for better reconnection handling
-                pool_name="mariadb_test_pool",
-                pool_size=3,
-                pool_reset_session=True,
+                # Do NOT use connection pooling - it causes pool exhaustion during failovers
+                # Each reconnection should get a fresh connection
             )
             logger.info(f"Successfully connected to MariaDB (server version: {self.connection.get_server_info()})")
             return True
