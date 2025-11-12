@@ -44,26 +44,15 @@ data:
         {{- end }}
     }
 
-    # Replication hostgroups enable automatic failover detection
-    mysql_replication_hostgroups =
-    (
-        {
-            writer_hostgroup={{ .Values.proxysql.hostgroups.writer }},
-            reader_hostgroup={{ .Values.proxysql.hostgroups.reader }},
-            comment="{{ .Values.proxysql.hostgroups.comment }}"
-        }
-    )
-
     # Backend MariaDB servers
+    # ProxySQL connects via mariadb-cluster-primary service for operator-managed failover
+    # This eliminates data loss race condition during switchover
     mysql_servers =
     (
         {{- $fullname := include "mariadb-cluster.fullname" . }}
         {{- $namespace := include "mariadb-cluster.namespace" . }}
         {{- $hostgroup := .Values.proxysql.hostgroups.writer }}
-        {{- $replicas := int .Values.mariadb.replicas }}
-        {{- range $i := until $replicas }}
-        { address="{{ $fullname }}-{{ $i }}.{{ $fullname }}-internal.{{ $namespace }}.svc.cluster.local", port=3306, hostgroup={{ $hostgroup }}, max_connections=100 }{{ if lt $i (sub $replicas 1) }},{{ end }}
-        {{- end }}
+        { address="{{ $fullname }}-primary.{{ $namespace }}.svc.cluster.local", port=3306, hostgroup={{ $hostgroup }}, max_connections=1000 }
     )
 
     # ProxySQL users

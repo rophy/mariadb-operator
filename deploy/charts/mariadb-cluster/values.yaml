@@ -162,17 +162,10 @@ proxysql:
     maxUserConnections: 10
 
   # -- Hostgroup configuration
+  # ProxySQL connects to mariadb-cluster-primary service (operator-managed failover)
+  # All queries route to this hostgroup by default
   hostgroups:
     writer: 10
-    reader: 20
-    comment: "MariaDB Cluster"
-
-  # -- Monitoring intervals (milliseconds)
-  monitoring:
-    connectInterval: 60000
-    pingInterval: 10000
-    readOnlyInterval: 1500
-    readOnlyTimeout: 500
 
   # -- MySQL variables configuration
   mysql:
