@@ -53,3 +53,10 @@ pprof.out
 deploy/charts/**/charts/
 
 logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python

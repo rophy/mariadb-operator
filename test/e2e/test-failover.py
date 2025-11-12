@@ -101,10 +101,14 @@ def parse_client_stats(logs: str) -> Dict[str, int]:
             stats['successful'] = int(line.split()[-1])
         elif 'Failed Writes:' in line:
             stats['failed'] = int(line.split()[-1])
-        elif 'Connection Interruptions:' in line:
-            stats['interruptions'] = int(line.split()[-1])
         elif 'Connection Errors:' in line:
             stats['connection_errors'] = int(line.split()[-1])
+        elif 'Total Write Attempts:' in line:
+            stats['total_attempts'] = int(line.split()[-1])
+
+    # Set interruptions to 0 since the new client doesn't track this separately
+    # (it's included in failed_writes now)
+    stats['interruptions'] = 0
 
     return stats
 

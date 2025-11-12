@@ -3,11 +3,22 @@
 MariaDB Failover Test Client
 
 This client continuously writes records with an increasing sequence number
-to test failover behavior. It tracks:
+to test failover behavior using idempotent UPSERT operations. It uses hybrid
+attempt tracking to observe both client-side and database-side retry behavior.
+
+Tracking metrics:
 - Write successes and failures
 - Connection errors and reconnections
 - Write latency
-- Sequence gaps (indicating data loss or connection issues)
+- Hybrid attempt tracking:
+  * attempt_count: Total client attempts for each sequence (including failures)
+  * upsert_count: Number of successful UPSERTs (1=insert, 2+=duplicate handling)
+
+The client uses UPSERT (INSERT ... ON DUPLICATE KEY UPDATE) to ensure:
+- No duplicate sequences even if write succeeds but client doesn't see response
+- Failed writes are retried with the same sequence number
+- Data consistency is guaranteed under extreme failover conditions
+- Full observability of retry behavior during failover events
 
 Usage:
     python main.py --host mariadb-cluster --port 3306 --user root --password secret
@@ -81,11 +92,11 @@ class MariaDBClient:
 
         self.connection: Optional[mysql.connector.MySQLConnection] = None
         self.current_sequence = 0
+        self.current_sequence_attempts = 0  # Track attempts for current sequence
         self.total_writes = 0
         self.successful_writes = 0
         self.failed_writes = 0
         self.connection_errors = 0
-        self.reconnection_count = 0  # Track successful reconnections
         self.last_success_time: Optional[datetime] = None
         self.last_error_time: Optional[datetime] = None
 
@@ -133,20 +144,28 @@ class MariaDBClient:
 
             cursor = self.connection.cursor()
 
-            # Create table with sequence, timestamp, and client_id
+            # Create table with composite primary key (client_id, sequence) for idempotency
+            # This ensures no duplicate sequences per client, enabling safe UPSERT operations
+            #
+            # Hybrid tracking:
+            # - attempt_count: Total client attempts for this sequence (from client memory)
+            # - upsert_count: Number of times UPSERT touched this row (1=insert, 2+=update)
             create_table_query = """
                 CREATE TABLE IF NOT EXISTS failover_test (
-                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
                     client_id VARCHAR(255) NOT NULL,
                     sequence BIGINT NOT NULL,
                     write_timestamp DATETIME(6) NOT NULL,
                     hostname VARCHAR(255),
-                    INDEX idx_client_seq (client_id, sequence),
+                    attempt_count INT DEFAULT 1,
+                    upsert_count INT DEFAULT 1,
+                    first_attempt_ts DATETIME(6),
+                    last_update_ts DATETIME(6),
+                    PRIMARY KEY (client_id, sequence),
                     INDEX idx_timestamp (write_timestamp)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
             cursor.execute(create_table_query)
-            logger.info("Table 'failover_test' initialized")
+            logger.info("Table 'failover_test' initialized with idempotent schema")
 
             # Get the maximum sequence for this client to resume from
             cursor.execute(
@@ -165,17 +184,15 @@ class MariaDBClient:
             return False
 
     def write_record(self) -> WriteResult:
-        """Write a single record with the next sequence number"""
-        self.current_sequence += 1
+        """Write using idempotent UPSERT with hybrid attempt tracking"""
         self.total_writes += 1
-
+        self.current_sequence_attempts += 1  # Increment on every attempt (including failures)
         start_time = time.time()
-
-        # Check if we're currently connected
-        was_connected = self.connection and self.connection.is_connected()
 
         try:
             if not self.ensure_connection():
+                # Connection failed, will retry same sequence in next loop iteration
+                # attempt_count stays incremented for next try
                 latency_ms = (time.time() - start_time) * 1000
                 self.failed_writes += 1
                 self.last_error_time = datetime.now()
@@ -186,37 +203,31 @@ class MariaDBClient:
                     error="Connection lost"
                 )
 
-            # If we had to reconnect, count this as a failure (connection interruption)
-            if not was_connected:
-                self.reconnection_count += 1
-                latency_ms = (time.time() - start_time) * 1000
-                self.failed_writes += 1
-                self.last_error_time = datetime.now()
-                logger.warning(
-                    f"⚠ Connection was lost, reconnected successfully but counting as failure "
-                    f"(reconnection #{self.reconnection_count}, latency: {latency_ms:.2f}ms)"
-                )
-                return WriteResult(
-                    sequence=self.current_sequence,
-                    success=False,
-                    latency_ms=latency_ms,
-                    error="Connection interruption (reconnected)"
-                )
-
             cursor = self.connection.cursor()
 
-            insert_query = """
-                INSERT INTO failover_test (client_id, sequence, write_timestamp, hostname)
-                VALUES (%s, %s, NOW(6), %s)
+            # UPSERT with hybrid tracking:
+            # - attempt_count: From client memory (total attempts including failures)
+            # - upsert_count: Managed by DB (1 on insert, increments on duplicate)
+            upsert_query = """
+                INSERT INTO failover_test
+                    (client_id, sequence, write_timestamp, hostname,
+                     attempt_count, upsert_count, first_attempt_ts, last_update_ts)
+                VALUES (%s, %s, NOW(6), %s, %s, 1, NOW(6), NOW(6))
+                ON DUPLICATE KEY UPDATE
+                    attempt_count = VALUES(attempt_count),
+                    upsert_count = upsert_count + 1,
+                    last_update_ts = NOW(6),
+                    hostname = VALUES(hostname)
             """
-            cursor.execute(insert_query, (
+
+            cursor.execute(upsert_query, (
                 self.client_id,
                 self.current_sequence,
-                self.get_current_primary_host()
+                self.get_current_primary_host(),
+                self.current_sequence_attempts  # Pass in-memory attempt count
             ))
 
             latency_ms = (time.time() - start_time) * 1000
-
             cursor.close()
 
             self.successful_writes += 1
@@ -224,11 +235,16 @@ class MariaDBClient:
 
             logger.info(
                 f"✓ Wrote sequence {self.current_sequence} "
-                f"(latency: {latency_ms:.2f}ms, success_rate: {self.get_success_rate():.1f}%)"
+                f"(attempts: {self.current_sequence_attempts}, latency: {latency_ms:.2f}ms, "
+                f"success_rate: {self.get_success_rate():.1f}%)"
             )
 
+            # Success! Move to next sequence and reset attempt counter
+            self.current_sequence += 1
+            self.current_sequence_attempts = 0
+
             return WriteResult(
-                sequence=self.current_sequence,
+                sequence=self.current_sequence - 1,  # Return the sequence we just wrote
                 success=True,
                 latency_ms=latency_ms
             )
@@ -239,15 +255,17 @@ class MariaDBClient:
             self.last_error_time = datetime.now()
 
             error_msg = str(e)
-            logger.error(
-                f"✗ Failed to write sequence {self.current_sequence}: {error_msg} "
-                f"(latency: {latency_ms:.2f}ms, success_rate: {self.get_success_rate():.1f}%)"
+            logger.warning(
+                f"⚠ Failed sequence {self.current_sequence} (attempt {self.current_sequence_attempts}): "
+                f"{error_msg} (latency: {latency_ms:.2f}ms, will retry)"
             )
 
             # Check if this is a read-only error (failover in progress)
             if "read-only" in error_msg.lower() or "read only" in error_msg.lower():
                 logger.warning("⚠ Database is read-only - failover may be in progress!")
 
+            # Don't increment sequence - will retry same sequence in next loop iteration
+            # attempt_count already incremented above, will be higher on next try
             return WriteResult(
                 sequence=self.current_sequence,
                 success=False,
@@ -278,11 +296,10 @@ class MariaDBClient:
         logger.info(f"Client Statistics (ID: {self.client_id})")
         logger.info("=" * 60)
         logger.info(f"Current Sequence:     {self.current_sequence}")
-        logger.info(f"Total Writes:         {self.total_writes}")
+        logger.info(f"Total Write Attempts: {self.total_writes}")
         logger.info(f"Successful Writes:    {self.successful_writes}")
         logger.info(f"Failed Writes:        {self.failed_writes}")
-        logger.info(f"  - Connection Interruptions: {self.reconnection_count}")
-        logger.info(f"  - Connection Errors:        {self.connection_errors}")
+        logger.info(f"Connection Errors:    {self.connection_errors}")
         logger.info(f"Success Rate:         {self.get_success_rate():.2f}%")
 
         if self.last_success_time:
