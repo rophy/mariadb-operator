@@ -221,7 +221,7 @@ def main():
     # Start timing the failover and get RFC3339 timestamp for log filtering
     import datetime
     failover_start_time = time.time()
-    failover_start_timestamp = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    failover_start_timestamp = datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
 
     delete_result = run_kubectl(['delete', 'pod', '-n', namespace, primary_pod])
 
