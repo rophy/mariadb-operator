@@ -167,6 +167,91 @@ def get_data_consistency(namespace: str, mariadb_name: str, replicas: int) -> Di
     return stats
 
 
+def verify_no_gaps_or_duplicates(namespace: str, pod: str) -> Dict[str, any]:
+    """Verify each client has no sequence gaps or duplicates."""
+    result = run_kubectl([
+        'exec', '-n', namespace, pod, '-c', 'mariadb', '--',
+        'mariadb', '-uroot', '-pmariadb-root-password', '-D', 'test', '-sN', '-e',
+        """
+        SELECT
+            client_id,
+            MIN(sequence) as min_seq,
+            MAX(sequence) as max_seq,
+            COUNT(*) as total_rows,
+            MAX(sequence) - MIN(sequence) + 1 as expected_rows,
+            COUNT(DISTINCT sequence) as unique_seqs
+        FROM failover_test
+        GROUP BY client_id
+        """
+    ])
+
+    if result.returncode != 0:
+        return {'error': 'Failed to query database'}
+
+    clients = {}
+    for line in result.stdout.strip().split('\n'):
+        parts = line.split('\t')
+        if len(parts) == 6:
+            client_id = parts[0]
+            min_seq = int(parts[1])
+            max_seq = int(parts[2])
+            total_rows = int(parts[3])
+            expected_rows = int(parts[4])
+            unique_seqs = int(parts[5])
+
+            has_gaps = total_rows != expected_rows
+            has_duplicates = unique_seqs != total_rows
+
+            clients[client_id] = {
+                'min_seq': min_seq,
+                'max_seq': max_seq,
+                'total_rows': total_rows,
+                'expected_rows': expected_rows,
+                'unique_seqs': unique_seqs,
+                'has_gaps': has_gaps,
+                'has_duplicates': has_duplicates
+            }
+
+    return clients
+
+
+def get_attempt_tracking_stats(namespace: str, pod: str) -> Dict[str, any]:
+    """Get max attempt_count and upsert_count statistics."""
+    result = run_kubectl([
+        'exec', '-n', namespace, pod, '-c', 'mariadb', '--',
+        'mariadb', '-uroot', '-pmariadb-root-password', '-D', 'test', '-sN', '-e',
+        """
+        SELECT
+            client_id,
+            MAX(attempt_count) as max_attempts,
+            MAX(upsert_count) as max_upserts,
+            SUM(CASE WHEN upsert_count > 1 THEN 1 ELSE 0 END) as duplicate_writes
+        FROM failover_test
+        GROUP BY client_id
+        """
+    ])
+
+    if result.returncode != 0:
+        return {'error': 'Failed to query database'}
+
+    clients = {}
+    for line in result.stdout.strip().split('\n'):
+        parts = line.split('\t')
+        if len(parts) == 4:
+            client_id = parts[0]
+            max_attempts = int(parts[1])
+            max_upserts = int(parts[2])
+            duplicate_writes = int(parts[3])
+
+            clients[client_id] = {
+                'max_attempts': max_attempts,
+                'max_upserts': max_upserts,
+                'duplicate_writes': duplicate_writes
+            }
+
+    return clients
+
+
 def main():
     # Configuration
     namespace = "mariadb"
@@ -293,11 +378,12 @@ def main():
         print(f"    Interruption duration: ~{interruption_duration:.1f}s")
         print()
 
-    # Step 7: Verify data consistency
-    print(f"{Colors.YELLOW}[7/7] Verifying data consistency...{Colors.NC}")
+    # Step 7: Verify data consistency and integrity
+    print(f"{Colors.YELLOW}[7/7] Verifying data consistency and integrity...{Colors.NC}")
     print(f"  Waiting 5s for replication to catch up...\n")
     time.sleep(5)
 
+    # Check replica consistency
     data_stats = get_data_consistency(namespace, mariadb_name, replicas)
 
     reference_rows = None
@@ -322,9 +408,71 @@ def main():
     print()
 
     if all_consistent:
-        print(f"{Colors.GREEN}✓ Data is consistent across all replicas (max diff: {max_diff} rows){Colors.NC}")
+        print(f"{Colors.GREEN}✓ Data is consistent across all replicas (max diff: {max_diff} rows){Colors.NC}\n")
     else:
-        print(f"{Colors.RED}✗ Data inconsistency detected (max diff: {max_diff} rows){Colors.NC}")
+        print(f"{Colors.RED}✗ Data inconsistency detected (max diff: {max_diff} rows){Colors.NC}\n")
+
+    # Verify no gaps or duplicates (using new primary)
+    print(f"  Checking for sequence gaps and duplicates...")
+    gap_dup_stats = verify_no_gaps_or_duplicates(namespace, new_primary)
+
+    has_gaps = False
+    has_duplicates = False
+
+    for client_id, stats in gap_dup_stats.items():
+        if 'error' in stats:
+            print(f"  {Colors.RED}✗ Error checking {client_id}: {stats['error']}{Colors.NC}")
+            continue
+
+        client_short = client_id.split('-')[-1] if len(client_id) > 40 else client_id
+
+        if stats['has_gaps']:
+            has_gaps = True
+            gap_count = stats['expected_rows'] - stats['total_rows']
+            print(f"  {Colors.RED}✗ {client_short}: GAPS DETECTED - Missing {gap_count} sequences{Colors.NC}")
+            print(f"    Range: {stats['min_seq']}-{stats['max_seq']}, Got: {stats['total_rows']}, Expected: {stats['expected_rows']}")
+        elif stats['has_duplicates']:
+            has_duplicates = True
+            dup_count = stats['total_rows'] - stats['unique_seqs']
+            print(f"  {Colors.RED}✗ {client_short}: DUPLICATES DETECTED - {dup_count} duplicate sequences{Colors.NC}")
+            print(f"    Rows: {stats['total_rows']}, Unique: {stats['unique_seqs']}")
+        else:
+            print(f"  {Colors.GREEN}✓ {client_short}: No gaps, no duplicates ({stats['total_rows']} sequences){Colors.NC}")
+
+    print()
+
+    # Check attempt tracking stats
+    print(f"  Analyzing retry behavior (attempt_count and upsert_count)...")
+    tracking_stats = get_attempt_tracking_stats(namespace, new_primary)
+
+    has_upsert_duplicates = False
+
+    for client_id, stats in tracking_stats.items():
+        if 'error' in stats:
+            print(f"  {Colors.RED}✗ Error checking {client_id}: {stats['error']}{Colors.NC}")
+            continue
+
+        client_short = client_id.split('-')[-1] if len(client_id) > 40 else client_id
+
+        max_attempts = stats['max_attempts']
+        max_upserts = stats['max_upserts']
+        dup_writes = stats['duplicate_writes']
+
+        # Log max attempt_count
+        if max_attempts > 1:
+            print(f"  {Colors.YELLOW}→ {client_short}: Max retry attempts: {max_attempts} (during failover){Colors.NC}")
+        else:
+            print(f"  → {client_short}: Max retry attempts: {max_attempts} (no retries needed)")
+
+        # Check for upsert_count > 1 (WARNING - indicates uncertain transaction state)
+        if max_upserts > 1 or dup_writes > 0:
+            has_upsert_duplicates = True
+            print(f"  {Colors.RED}⚠⚠⚠ WARNING: {client_short} has upsert_count > 1!{Colors.NC}")
+            print(f"      Max upsert_count: {max_upserts}")
+            print(f"      Rows with duplicates: {dup_writes}")
+            print(f"      This indicates write succeeded but ACK was lost (idempotency saved us!)")
+
+    print()
 
     # Summary
     print(f"\n{Colors.GREEN}{'='*80}{Colors.NC}")
@@ -345,11 +493,24 @@ def main():
             print(f"    Connection errors: {stats['connection_errors']}")
         print()
 
-    if all_consistent:
-        print(f"{Colors.GREEN}✓ Test PASSED{Colors.NC}\n")
+    # Determine overall test result
+    test_passed = all_consistent and not has_gaps and not has_duplicates
+
+    if test_passed:
+        print(f"{Colors.GREEN}✓ Test PASSED{Colors.NC}")
+        if has_upsert_duplicates:
+            print(f"{Colors.YELLOW}  Note: upsert_count > 1 detected (idempotency worked as designed){Colors.NC}")
+        print()
         return 0
     else:
-        print(f"{Colors.RED}✗ Test FAILED - Data inconsistency{Colors.NC}\n")
+        print(f"{Colors.RED}✗ Test FAILED{Colors.NC}")
+        if not all_consistent:
+            print(f"  - Replica inconsistency detected")
+        if has_gaps:
+            print(f"  - Sequence gaps detected")
+        if has_duplicates:
+            print(f"  - Duplicate sequences detected")
+        print()
         return 1
 
 
