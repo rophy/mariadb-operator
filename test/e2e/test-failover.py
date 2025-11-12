@@ -5,7 +5,9 @@ Primary Pod Failover Test for MariaDB Cluster
 This script tests actual failover behavior by:
 1. Identifying the current primary pod
 2. Recording test client statistics before failover
-3. Forcibly deleting the primary pod to trigger failover
+3. Triggering failover using one of several scenarios:
+   - delete-pod: Forcibly delete the primary pod (graceful shutdown)
+   - patch-crd: Patch MariaDB CRD to trigger controlled switchover
 4. Monitoring client write failures during failover
 5. Verifying new primary was elected
 6. Verifying data consistency across all replicas
@@ -17,6 +19,7 @@ import subprocess
 import json
 import time
 import sys
+import argparse
 from typing import Dict, Tuple, Optional
 
 
@@ -33,8 +36,12 @@ def run_kubectl(args: list, capture_output=True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=capture_output, text=True)
 
 
-def get_current_primary_pod(namespace: str, mariadb_name: str) -> Optional[str]:
-    """Get the current primary pod from MariaDB CR status."""
+def get_current_primary_pod(namespace: str, mariadb_name: str) -> Optional[Tuple[str, int]]:
+    """Get the current primary pod from MariaDB CR status.
+
+    Returns:
+        Tuple of (pod_name, pod_index) or None if not found
+    """
     result = run_kubectl([
         'get', 'mariadb', '-n', namespace, mariadb_name,
         '-o', 'jsonpath={.status.currentPrimaryPodIndex}'
@@ -42,7 +49,7 @@ def get_current_primary_pod(namespace: str, mariadb_name: str) -> Optional[str]:
 
     if result.returncode == 0 and result.stdout.strip():
         pod_index = int(result.stdout.strip())
-        return f"{mariadb_name}-{pod_index}"
+        return (f"{mariadb_name}-{pod_index}", pod_index)
 
     return None
 
@@ -124,19 +131,25 @@ def get_client_stats(namespace: str, pod: str, since_time: Optional[str] = None)
     return parse_client_stats(result.stdout)
 
 
-def wait_for_new_primary(namespace: str, mariadb_name: str, old_primary: str, max_wait: int = 60) -> Optional[str]:
-    """Wait for a new primary to be elected."""
+def wait_for_new_primary(namespace: str, mariadb_name: str, old_primary: str, max_wait: int = 60) -> Optional[Tuple[str, int]]:
+    """Wait for a new primary to be elected.
+
+    Returns:
+        Tuple of (pod_name, pod_index) or None if timeout
+    """
     print(f"  Waiting for new primary election (max {max_wait}s)...")
     elapsed = 0
 
     while elapsed < max_wait:
-        new_primary = get_current_primary_pod(namespace, mariadb_name)
+        result = get_current_primary_pod(namespace, mariadb_name)
 
-        if new_primary and new_primary != old_primary:
-            # Verify the new primary is actually writable
-            if verify_primary_pod(namespace, new_primary):
-                print(f"  {Colors.GREEN}✓ New primary elected: {new_primary}{Colors.NC}")
-                return new_primary
+        if result:
+            new_primary, new_index = result
+            if new_primary != old_primary:
+                # Verify the new primary is actually writable
+                if verify_primary_pod(namespace, new_primary):
+                    print(f"  {Colors.GREEN}✓ New primary elected: {new_primary}{Colors.NC}")
+                    return result
 
         time.sleep(2)
         elapsed += 2
@@ -252,25 +265,152 @@ def get_attempt_tracking_stats(namespace: str, pod: str) -> Dict[str, any]:
     return clients
 
 
+def choose_next_primary(current_index: int, replicas: int) -> int:
+    """Choose the next primary pod index (simple round-robin)."""
+    return (current_index + 1) % replicas
+
+
+def trigger_failover_delete_pod(namespace: str, primary_pod: str, primary_index: int) -> Tuple[bool, str]:
+    """Trigger failover by deleting the primary pod.
+
+    This simulates a graceful pod termination where Kubernetes sends SIGTERM
+    and allows the pod time to shut down cleanly.
+
+    Returns:
+        Tuple of (success, timestamp)
+    """
+    import datetime
+
+    print(f"{Colors.YELLOW}[4/7] Triggering failover: DELETE POD{Colors.NC}")
+    print(f"  Deleting {primary_pod}...")
+
+    # Get RFC3339 timestamp for log filtering
+    failover_start_timestamp = datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    delete_result = run_kubectl(['delete', 'pod', '-n', namespace, primary_pod])
+
+    if delete_result.returncode != 0:
+        print(f"{Colors.RED}✗ Failed to delete pod{Colors.NC}")
+        return (False, failover_start_timestamp)
+
+    print(f"  {Colors.GREEN}✓ Pod deletion initiated at {failover_start_timestamp}{Colors.NC}")
+    print(f"  {Colors.YELLOW}Note: This is a graceful shutdown with SIGTERM{Colors.NC}\n")
+
+    return (True, failover_start_timestamp)
+
+
+def trigger_failover_patch_crd(namespace: str, mariadb_name: str, primary_pod: str,
+                                 primary_index: int, replicas: int) -> Tuple[bool, str]:
+    """Trigger failover by patching the MariaDB CRD to change primary.
+
+    This simulates an operator-controlled switchover where the primary is
+    changed via the spec.replication.primary.podIndex field.
+
+    Returns:
+        Tuple of (success, timestamp)
+    """
+    import datetime
+
+    next_index = choose_next_primary(primary_index, replicas)
+    next_primary = f"{mariadb_name}-{next_index}"
+
+    print(f"{Colors.YELLOW}[4/7] Triggering failover: PATCH CRD{Colors.NC}")
+    print(f"  Patching MariaDB CRD to switch primary:")
+    print(f"    Current: {primary_pod} (index {primary_index})")
+    print(f"    Target:  {next_primary} (index {next_index})")
+
+    # Get RFC3339 timestamp for log filtering
+    failover_start_timestamp = datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    # Patch the CRD to change the primary
+    patch_result = run_kubectl([
+        'patch', 'mariadb', '-n', namespace, mariadb_name,
+        '--type', 'merge',
+        '-p', f'{{"spec":{{"replication":{{"primary":{{"podIndex":{next_index}}}}}}}}}'
+    ])
+
+    if patch_result.returncode != 0:
+        print(f"{Colors.RED}✗ Failed to patch MariaDB CRD{Colors.NC}")
+        print(f"  Error: {patch_result.stderr}")
+        return (False, failover_start_timestamp)
+
+    print(f"  {Colors.GREEN}✓ CRD patch applied at {failover_start_timestamp}{Colors.NC}")
+    print(f"  {Colors.YELLOW}Note: This is a controlled switchover via operator{Colors.NC}\n")
+
+    return (True, failover_start_timestamp)
+
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description='MariaDB Primary Pod Failover Test',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Failover Scenarios:
+  delete-pod    Delete the primary pod (graceful shutdown with SIGTERM)
+                This is the default Kubernetes pod deletion behavior.
+
+  patch-crd     Patch the MariaDB CRD to trigger operator-controlled switchover
+                Changes spec.replication.primary.podIndex to trigger failover.
+        """
+    )
+
+    parser.add_argument(
+        '--scenario',
+        type=str,
+        choices=['delete-pod', 'patch-crd'],
+        default='delete-pod',
+        help='Failover scenario to test (default: delete-pod)'
+    )
+
+    parser.add_argument(
+        '--namespace',
+        type=str,
+        default='mariadb',
+        help='Kubernetes namespace (default: mariadb)'
+    )
+
+    parser.add_argument(
+        '--mariadb-name',
+        type=str,
+        default='mariadb-cluster',
+        help='MariaDB resource name (default: mariadb-cluster)'
+    )
+
+    parser.add_argument(
+        '--replicas',
+        type=int,
+        default=3,
+        help='Number of MariaDB replicas (default: 3)'
+    )
+
+    return parser.parse_args()
+
+
 def main():
-    # Configuration
-    namespace = "mariadb"
-    mariadb_name = "mariadb-cluster"
-    replicas = 3
+    # Parse command line arguments
+    args = parse_args()
+
+    namespace = args.namespace
+    mariadb_name = args.mariadb_name
+    replicas = args.replicas
+    scenario = args.scenario
 
     print(f"{Colors.GREEN}{'='*80}{Colors.NC}")
     print(f"{Colors.GREEN}MariaDB Primary Pod Failover Test{Colors.NC}")
+    print(f"{Colors.GREEN}Scenario: {scenario.upper()}{Colors.NC}")
     print(f"{Colors.GREEN}{'='*80}{Colors.NC}\n")
 
     # Step 1: Identify current primary
     print(f"{Colors.YELLOW}[1/7] Identifying current primary pod...{Colors.NC}")
-    primary_pod = get_current_primary_pod(namespace, mariadb_name)
+    result = get_current_primary_pod(namespace, mariadb_name)
 
-    if not primary_pod:
+    if not result:
         print(f"{Colors.RED}✗ Failed to identify primary pod{Colors.NC}")
         return 1
 
-    print(f"  Primary pod: {primary_pod}")
+    primary_pod, primary_index = result
+    print(f"  Primary pod: {primary_pod} (index {primary_index})")
 
     # Verify it's actually the primary
     if not verify_primary_pod(namespace, primary_pod):
@@ -303,31 +443,34 @@ def main():
         print(f"    Failed: {stats.get('failed', 0)}")
     print()
 
-    # Step 4: Delete primary pod to trigger failover
-    print(f"{Colors.YELLOW}[4/7] Deleting primary pod to trigger failover...{Colors.NC}")
-    print(f"  Deleting {primary_pod}...")
-
-    # Start timing the failover and get RFC3339 timestamp for log filtering
-    import datetime
+    # Step 4: Trigger failover based on scenario
     failover_start_time = time.time()
-    failover_start_timestamp = datetime.datetime.now(datetime.UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
 
-    delete_result = run_kubectl(['delete', 'pod', '-n', namespace, primary_pod])
-
-    if delete_result.returncode != 0:
-        print(f"{Colors.RED}✗ Failed to delete pod{Colors.NC}")
+    if scenario == 'delete-pod':
+        success, failover_start_timestamp = trigger_failover_delete_pod(
+            namespace, primary_pod, primary_index
+        )
+    elif scenario == 'patch-crd':
+        success, failover_start_timestamp = trigger_failover_patch_crd(
+            namespace, mariadb_name, primary_pod, primary_index, replicas
+        )
+    else:
+        print(f"{Colors.RED}✗ Unknown scenario: {scenario}{Colors.NC}")
         return 1
 
-    print(f"  {Colors.GREEN}✓ Pod deletion initiated at {failover_start_timestamp}{Colors.NC}\n")
+    if not success:
+        print(f"{Colors.RED}✗ Failed to trigger failover{Colors.NC}")
+        return 1
 
     # Step 5: Wait for new primary election
     print(f"{Colors.YELLOW}[5/7] Waiting for new primary election...{Colors.NC}")
-    new_primary = wait_for_new_primary(namespace, mariadb_name, primary_pod)
+    result = wait_for_new_primary(namespace, mariadb_name, primary_pod)
 
-    if not new_primary:
+    if not result:
         print(f"{Colors.RED}✗ Failover failed{Colors.NC}")
         return 1
 
+    new_primary, new_index = result
     failover_election_time = time.time() - failover_start_time
     print(f"  Failover election completed in {failover_election_time:.1f}s\n")
 
