@@ -33,3 +33,9 @@ This ensures ProxySQL performs fresh DNS lookups on every connection attempt, au
 **Verification**: Failover testing confirms recovered pods now come back ONLINE automatically within seconds without manual intervention.
 
 **Impact of Fix**: Negligible performance impact - DNS queries to cluster-local headless services are very fast (~0.2-0.4ms).
+
+## ProxySQL Fast Failover Causes Data Loss During Operator-Controlled Switchover
+
+**Issue**: [#2](https://github.com/rophy/mariadb-operator/issues/2)
+
+**Status**: ProxySQL's fast failover (~1-2s) races against operator's controlled switchover (~10-12s), causing data loss. Use Gateway (Istio) instead for production.
