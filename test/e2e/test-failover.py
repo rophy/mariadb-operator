@@ -109,9 +109,14 @@ def parse_client_stats(logs: str) -> Dict[str, int]:
     return stats
 
 
-def get_client_stats(namespace: str, pod: str) -> Dict[str, int]:
+def get_client_stats(namespace: str, pod: str, since_time: Optional[str] = None) -> Dict[str, int]:
     """Get current test client statistics."""
-    result = run_kubectl(['logs', '-n', namespace, pod, '--tail=100'])
+    if since_time:
+        # Get logs since the specified time
+        result = run_kubectl(['logs', '-n', namespace, pod, '--since-time', since_time])
+    else:
+        # Get recent logs
+        result = run_kubectl(['logs', '-n', namespace, pod, '--tail=100'])
     return parse_client_stats(result.stdout)
 
 
@@ -213,8 +218,10 @@ def main():
     print(f"{Colors.YELLOW}[4/7] Deleting primary pod to trigger failover...{Colors.NC}")
     print(f"  Deleting {primary_pod}...")
 
-    # Start timing the failover
+    # Start timing the failover and get RFC3339 timestamp for log filtering
+    import datetime
     failover_start_time = time.time()
+    failover_start_timestamp = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
 
     delete_result = run_kubectl(['delete', 'pod', '-n', namespace, primary_pod])
 
@@ -222,7 +229,7 @@ def main():
         print(f"{Colors.RED}✗ Failed to delete pod{Colors.NC}")
         return 1
 
-    print(f"  {Colors.GREEN}✓ Pod deletion initiated{Colors.NC}\n")
+    print(f"  {Colors.GREEN}✓ Pod deletion initiated at {failover_start_timestamp}{Colors.NC}\n")
 
     # Step 5: Wait for new primary election
     print(f"{Colors.YELLOW}[5/7] Waiting for new primary election...{Colors.NC}")
